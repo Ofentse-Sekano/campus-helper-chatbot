@@ -2,66 +2,131 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const nodemailer = require('nodemailer');
-
-const mailTransporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
-async function pushFaultToSharePointViaEmail(faultObj) {
-  if (!process.env.SMTP_USER || !process.env.CAMPUS_OUTLOOK_EMAIL) {
-    console.warn("⚠️ Email bridge skipped: Set SMTP_USER and CAMPUS_OUTLOOK_EMAIL in .env");
-    return;
-  }
-  try {
-    await mailTransporter.sendMail({
-      from: `"Helper AI Bot" <${process.env.SMTP_USER}>`,
-      to: process.env.CAMPUS_OUTLOOK_EMAIL,
-      subject: `[HELPER-NEW-FAULT] ${faultObj.FaultID}`,
-      text: JSON.stringify(faultObj), // Pure JSON in the email body for Power Automate
-    });
-    console.log(`📧 Pushed ${faultObj.FaultID} to Power Automate SharePoint Bridge!`);
-  } catch (err) {
-    console.error("❌ Email Bridge Error:", err.message);
-  }
-}
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, 'sharepoint_data.json');
 
-app.use(express.json());
+const DATA_FILE = path.join(__dirname, 'sharepoint_data.json');
+const CSV_FILE = path.join(__dirname, 'FaultReports.csv');
+
+// Allow up to 10MB so CSV uploads never get blocked
+app.use(express.json({ limit: '10mb' }));
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const API_KEY = process.env.GEMINI_API_KEY;
+if (!API_KEY) {
+  console.error("❌ ERROR: GEMINI_API_KEY is missing in your .env file.");
+}
 const genAI = new GoogleGenerativeAI(API_KEY);
 
-// Helper functions to read/write SharePoint synced JSON data
-function getSharePointFaults() {
-  try {
-    if (!fs.existsSync(DATA_FILE)) return [];
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  } catch (e) {
-    console.error("Error reading SharePoint data file:", e);
-    return [];
+// Default initial data matching your SharePoint list
+const DEFAULT_FAULTS = [
+  {
+    Title: "Projector not working",
+    FaultID: "F001",
+    EquipmentType: "Projector",
+    Description: "The projector does not display an image when connected to the classroom computer.",
+    Priority: "High",
+    Status: "Assigned"
+  },
+  {
+    Title: "PC not powering On",
+    FaultID: "F002",
+    EquipmentType: "Classroom PC",
+    Description: "PC does not switch on at the power button or wall socket.",
+    Priority: "High",
+    Status: "In Progress"
   }
+];
+
+// Parses raw SharePoint CSV text (handles UTF-8 BOM, commas, semicolons, and quotes)
+function parseSharePointCSV(csvText) {
+  const cleanText = csvText.replace(/^\uFEFF/, '');
+  const lines = cleanText.split(/\r?\n/).filter(line => line.trim() !== '');
+  if (lines.length < 2) return [];
+
+  // Auto-detect comma vs semicolon delimiter
+  const firstLine = lines[0];
+  const delimiter = (firstLine.split(';').length > firstLine.split(',').length) ? ';' : ',';
+
+  const splitCSVLine = (line) => {
+    const result = [];
+    let cur = '', inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        inQuotes = !inQuotes;
+      } else if (ch === delimiter && !inQuotes) {
+        result.push(cur.trim());
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    result.push(cur.trim());
+    return result.map(val => val.replace(/^"|"$/g, '').trim());
+  };
+
+  // Normalize header names (lowercase, remove spaces/underscores) for flexible matching
+  const rawHeaders = splitCSVLine(lines[0]);
+  const normHeaders = rawHeaders.map(h => h.toLowerCase().replace(/[\s_]+/g, ''));
+
+  const items = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i]);
+    if (cols.every(c => c === '')) continue;
+
+    const row = {};
+    normHeaders.forEach((h, idx) => {
+      row[h] = cols[idx] || '';
+    });
+
+    items.push({
+      Title: row['title'] || 'Equipment Fault',
+      FaultID: row['faultid'] || `F${String(i).padStart(3, '0')}`,
+      EquipmentType: row['equipmenttype'] || 'Projector',
+      Description: row['description'] || '',
+      Priority: row['priority'] || 'High',
+      Status: row['status'] || 'Assigned'
+    });
+  }
+
+  return items;
 }
 
-function saveSharePointFault(newFault) {
+// Reads faults from FaultReports.csv (if dropped in folder) or sharepoint_data.json
+function getSharePointFaults() {
+  try {
+    // 1. If user saved FaultReports.csv in the root folder, parse it automatically
+    if (fs.existsSync(CSV_FILE)) {
+      const csvContent = fs.readFileSync(CSV_FILE, 'utf8');
+      const parsed = parseSharePointCSV(csvContent);
+      if (parsed.length > 0) {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(parsed, null, 2), 'utf8');
+        return parsed;
+      }
+    }
+
+    // 2. Otherwise read sharepoint_data.json (updated whenever you upload a CSV in the UI)
+    if (fs.existsSync(DATA_FILE)) {
+      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error("Error reading fault data:", e);
+  }
+  return DEFAULT_FAULTS;
+}
+
+function saveNewFault(newFault) {
   const faults = getSharePointFaults();
   faults.push(newFault);
   fs.writeFileSync(DATA_FILE, JSON.stringify(faults, null, 2), 'utf8');
   return newFault;
 }
 
-// Build dynamic system instruction with LIVE SharePoint FaultReports data
 function getDynamicSystemInstruction() {
   const liveFaults = getSharePointFaults();
   const nextIdNumber = liveFaults.length + 1;
@@ -69,30 +134,19 @@ function getDynamicSystemInstruction() {
 
   return `
 You are Helper, the intelligent First-Line IT & Facilities Support Assistant for the Belgium Campus Pretoria Equipment Fault Reporting & Tracking System.
-You are directly connected to the team's SharePoint List: "FaultReports" (plus "Equipment" and "Classrooms").
+You are connected to the SharePoint List: "FaultReports".
 
-### 1. LIVE SHAREPOINT "FaultReports" DATABASE (CURRENT ITEMS):
+### 1. CURRENT SHAREPOINT "FaultReports" LIST:
 ${JSON.stringify(liveFaults, null, 2)}
 
-### 2. WHAT YOU CAN DO WITH SHAREPOINT:
-- **Status Lookup**: If a user asks about an existing fault (e.g., "Check F001", "What faults are logged?", "Is the projector fault fixed?"), look at the LIVE SHAREPOINT DATABASE above and give them the exact Title, FaultID, Equipment Type, Description, Priority, and Status!
-- **Log a New Fault directly to SharePoint**:
-  1. First, verify the user's **Full Name**, **Student/Staff Number**, and **Role** (if not already verified). When verified, include this tag once at the top:
-     [VERIFIED: FullName | ID: Number | Role: RoleName]
-  2. Give a quick 30-second troubleshooting check for their hardware issue.
-  3. Ask them: *"Would you like me to log this directly into the SharePoint FaultReports list for you?"* (Or if they explicitly ask you to log/submit it right now, do it immediately).
-  4. When logging a new fault into SharePoint, include this EXACT single-line JSON tag at the very bottom of your message (our backend will parse it and add it to SharePoint):
-     [CREATE_FAULT: {"Title": "Short Title", "FaultID": "${nextFaultID}", "EquipmentType": "Projector | Classroom PC | Wi-Fi/Network", "Description": "Full description", "Priority": "High | Medium | Low", "Status": "Assigned", "RoomNumber": "Room/Lab"}]
+### 2. YOUR CAPABILITIES:
+- **Fault Status Lookup**: When a user asks about existing faults (e.g., "What faults are logged?", "Check F001", "Check F003"), read the CURRENT SHAREPOINT LIST above and report the exact Title, FaultID, EquipmentType, Description, Priority, and Status.
+- **User Verification**: Before logging a new fault, politely ask for the user's **Full Name**, **Student/Staff Number**, and **Role** (Student, Lecturer, or Staff). If they are in a live exam/test crisis, give a 30-second fix first. When they provide their Name and ID, include this exact tag once at the top of your reply:
+  [VERIFIED: FullName | ID: Number | Role: RoleName]
+- **Logging a New Fault**: If an issue needs a technician and the user asks you to log it, include this exact single-line JSON tag at the very bottom of your reply so the table updates immediately:
+  [CREATE_FAULT: {"Title": "Short Title", "FaultID": "${nextFaultID}", "EquipmentType": "Projector | Classroom PC | Wi-Fi/Network", "Description": "Clear description of fault", "Priority": "High | Medium | Low", "Status": "Assigned"}]
 
-### 3. SHAREPOINT SCHEMA RULES:
-- Match the exact SharePoint column choices shown on our site:
-  * **Title**: Short summary (e.g., "Projector not working", "PC not powering On")
-  * **FaultID**: Format F001, F002, F003... (Next available ID is ${nextFaultID})
-  * **Equipment Type**: "Projector", "Classroom PC", "Wi-Fi/Network", "Speakers", "Screen"
-  * **Priority**: "High", "Medium", "Low"
-  * **Status**: "Assigned", "In Progress", "Resolved"
-
-Keep responses friendly, structured with bullet points, and under 160 words.
+Keep responses concise, friendly, and formatted with bullet points and bold text (under 150 words).
 `;
 }
 
@@ -144,36 +198,39 @@ async function sendMessageWithRetry(sessionId, userMessage) {
   throw lastError;
 }
 
-// REST Endpoints for SharePoint / Power Apps / Frontend
+// Get current faults
 app.get('/api/faults', (req, res) => {
   res.json(getSharePointFaults());
 });
 
-app.post('/api/faults', (req, res) => {
-  const current = getSharePointFaults();
-  const nextID = `F${String(current.length + 1).padStart(3, '0')}`;
-  const fault = {
-    Title: req.body.Title || "Equipment Fault",
-    FaultID: req.body.FaultID || nextID,
-    EquipmentType: req.body.EquipmentType || "Classroom PC",
-    Description: req.body.Description || "",
-    Priority: req.body.Priority || "Medium",
-    Status: req.body.Status || "Assigned",
-    RoomNumber: req.body.RoomNumber || "Unspecified"
-  };
-  saveSharePointFault(fault);
-  res.json({ success: true, fault });
-});
+// Upload & parse SharePoint CSV from the browser button
+app.post('/api/import-sharepoint-csv', (req, res) => {
+  try {
+    const csvText = req.body.csv;
+    if (!csvText) {
+      return res.status(400).json({ error: "No CSV text provided." });
+    }
 
-// Bulk sync endpoint from SharePoint / Power Automate
-app.post('/api/sync-sharepoint', (req, res) => {
-  if (Array.isArray(req.body.items)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(req.body.items, null, 2), 'utf8');
-    return res.json({ success: true, count: req.body.items.length });
+    const items = parseSharePointCSV(csvText);
+    if (items.length === 0) {
+      return res.status(400).json({ error: "No valid fault rows found in CSV." });
+    }
+
+    // Save to sharepoint_data.json (and remove old FaultReports.csv if present so JSON takes priority)
+    if (fs.existsSync(CSV_FILE)) {
+      fs.writeFileSync(CSV_FILE, csvText, 'utf8');
+    }
+    fs.writeFileSync(DATA_FILE, JSON.stringify(items, null, 2), 'utf8');
+
+    console.log(`✅ Imported ${items.length} faults from SharePoint CSV!`);
+    res.json({ success: true, count: items.length, items });
+  } catch (err) {
+    console.error("❌ CSV Import Error:", err);
+    res.status(500).json({ error: err.message });
   }
-  res.status(400).json({ error: "Expected items array" });
 });
 
+// Chat endpoint
 app.post('/chat', async (req, res) => {
   try {
     const userMessage = req.body.userInput || req.body.message;
@@ -196,23 +253,20 @@ app.post('/chat', async (req, res) => {
       };
     }
 
-  // 2. Check for [CREATE_FAULT: {...}] tag to log new item in SharePoint store
+    // 2. Check for [CREATE_FAULT: {...}] tag
     let createdFault = null;
     const createRegex = /\[CREATE_FAULT:\s*(\{.*?\})\]/s;
     const createMatch = rawText.match(createRegex);
     if (createMatch) {
       try {
         const faultObj = JSON.parse(createMatch[1]);
-        createdFault = saveSharePointFault(faultObj);
-        console.log("✅ New Fault Saved Locally:", createdFault);
-        
-        // Trigger the Power Automate SharePoint Bridge!
-        pushFaultToSharePointViaEmail(createdFault);
+        createdFault = saveNewFault(faultObj);
+        console.log("✅ New Fault Added:", createdFault);
       } catch (e) {
         console.error("Failed to parse CREATE_FAULT JSON:", e);
       }
     }
-    
+
     const cleanText = rawText
       .replace(verifyRegex, '')
       .replace(createRegex, '')
@@ -227,11 +281,11 @@ app.post('/chat', async (req, res) => {
   } catch (error) {
     console.error("Gemini API Error:", error);
     res.status(500).json({
-      error: "Google's AI server is momentarily busy. Please click Send again in a few seconds."
+      error: "Google's AI server is momentarily busy. Please wait 3 seconds and click Send again."
     });
   }
 });
 
 app.listen(port, () => {
-  console.log(`✅ Helper + SharePoint Bridge running at http://localhost:${port}`);
+  console.log(`✅ Helper Server running at http://localhost:${port}`);
 });

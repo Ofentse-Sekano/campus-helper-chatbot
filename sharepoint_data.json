@@ -5,16 +5,70 @@
     "EquipmentType": "Projector",
     "Description": "The projector does not display an image when connected to the classroom computer.",
     "Priority": "High",
-    "Status": "Assigned",
-    "RoomNumber": "Room 12"
+    "Status": "In Progress"
   },
   {
     "Title": "PC not powering On",
     "FaultID": "F002",
     "EquipmentType": "Classroom PC",
-    "Description": "PC does not switch on at the power button or wall socket.",
+    "Description": "PC does not switch on at the wall.",
     "Priority": "High",
-    "Status": "In Progress",
-    "RoomNumber": "Lab 3"
+    "Status": "In Progress"
+  },
+  {
+    "Title": "Login Problem",
+    "FaultID": "F003",
+    "EquipmentType": "Online query or issue",
+    "Description": "Cannot login, password rejected.",
+    "Priority": "Medium",
+    "Status": "Assigned"
+  },
+  {
+    "Title": "Cracked Screen",
+    "FaultID": "F004",
+    "EquipmentType": "Classroom PC",
+    "Description": "Screen cracked at the corner.",
+    "Priority": "Low",
+    "Status": "Resolved"
+  },
+  {
+    "Title": "PC restarting",
+    "FaultID": "F005",
+    "EquipmentType": "Classroom PC",
+    "Description": "PC restarts itself during use.",
+    "Priority": "Medium",
+    "Status": "In Progress"
+  },
+  {
+    "Title": "Projector overheating",
+    "FaultID": "F006",
+    "EquipmentType": "Projector",
+    "Description": "Projector overheats and shits down mid lecture.",
+    "Priority": "High",
+    "Status": "Resolved"
+  },
+  {
+    "Title": "Wi-Fi connection failure",
+    "FaultID": "F007",
+    "EquipmentType": "Network Issue",
+    "Description": "No Wi-Fi connection during an online test.",
+    "Priority": "High",
+    "Status": "Resolved"
+  },
+  {
+    "Title": "Dim Projector",
+    "FaultID": "F008",
+    "EquipmentType": "Projector",
+    "Description": "Image is dim and washed out",
+    "Priority": "Medium",
+    "Status": "Resolved"
+  },
+  {
+    "Title": "Speaker crackling",
+    "FaultID": "F009",
+    "EquipmentType": "Classroom PC",
+    "Description": "Crackling sound from the speaker",
+    "Priority": "Low",
+    "Status": "Resolved"
   }
 ]

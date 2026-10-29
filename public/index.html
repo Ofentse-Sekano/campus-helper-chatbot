@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Belgium Campus | Helper & SharePoint Faults</title>
+  <title>Belgium Campus | Helper & SharePoint FaultReports</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -33,9 +33,9 @@
 
     .main-grid {
       display: grid;
-      grid-template-columns: 460px 520px;
+      grid-template-columns: 460px 540px;
       gap: 20px;
-      max-width: 1020px;
+      max-width: 1040px;
       width: 100%;
       height: 88vh;
       max-height: 760px;
@@ -55,7 +55,7 @@
       border: 1px solid rgba(255, 255, 255, 0.12);
     }
 
-    /* Header */
+    /* Left Chat Header */
     .chat-header {
       background: linear-gradient(135deg, var(--bc-red) 0%, var(--bc-red-dark) 100%);
       color: #fff;
@@ -79,8 +79,10 @@
     .reset-btn {
       background: rgba(255, 255, 255, 0.15);
       border: 1px solid rgba(255, 255, 255, 0.25);
-      color: white; padding: 6px 10px; border-radius: 8px; font-size: 12px; cursor: pointer;
+      color: white; padding: 7px 12px; border-radius: 8px; font-size: 12px; font-weight: 500;
+      cursor: pointer; transition: background 0.2s;
     }
+    .reset-btn:hover { background: rgba(255, 255, 255, 0.28); }
 
     .verification-bar {
       background: rgba(0, 0, 0, 0.22);
@@ -88,6 +90,7 @@
     }
     .verification-bar.verified { background: #dcfce7; color: #15803d; font-weight: 600; }
 
+    /* Chat Messages */
     #chat-history {
       flex: 1; padding: 18px; overflow-y: auto; background: var(--surface-alt);
       display: flex; flex-direction: column; gap: 14px;
@@ -129,13 +132,14 @@
     #user-input:focus { border-color: var(--bc-red); }
     #send-btn { background: var(--bc-red); color: #fff; border: none; padding: 11px 16px; border-radius: 12px; font-weight: 600; cursor: pointer; }
 
-    /* SharePoint Panel Styling */
+    /* Right SharePoint Panel */
     .sp-header {
       background: #0f172a; color: #fff; padding: 16px 20px;
       display: flex; justify-content: space-between; align-items: center;
     }
     .sp-header h2 { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
     .sp-header p { font-size: 11.5px; color: #94a3b8; margin-top: 3px; }
+    .sp-actions { display: flex; gap: 8px; }
     .sp-body { flex: 1; padding: 16px; overflow-y: auto; background: var(--surface-alt); }
 
     .sp-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); font-size: 12.5px; }
@@ -172,28 +176,32 @@
       </div>
 
       <div id="chat-history"></div>
-      <div id="loader"><span>🛠️ Helper is checking SharePoint FaultReports...</span></div>
+      <div id="loader"><span>🛠️ Helper is checking FaultReports...</span></div>
 
       <div class="quick-chips">
-        <button type="button" class="chip" data-prompt="🔍 Check status of FaultID F001 and F002 in SharePoint">🔍 Check F001 & F002</button>
-        <button type="button" class="chip" data-prompt="➕ Please log a High Priority fault for a broken Projector in Room 15.">➕ Log Fault to SharePoint</button>
+        <button type="button" class="chip" data-prompt="🔍 What faults are currently in the SharePoint FaultReports list?">🔍 Check All Faults</button>
+        <button type="button" class="chip" data-prompt="➕ Please log a High Priority fault for a broken Projector in Room 15.">➕ Log New Fault</button>
         <button type="button" class="chip" data-prompt="🚨 My PC crashed during an exam in Lab 3!">🚨 Exam PC Crash</button>
       </div>
 
       <form id="chat-form">
-        <input type="text" id="user-input" placeholder="Ask about F001, or tell Helper to log a new fault..." required autocomplete="off" />
+        <input type="text" id="user-input" placeholder="Ask about faults, or tell Helper to log a new fault..." required autocomplete="off" />
         <button type="submit" id="send-btn">Send ➤</button>
       </form>
     </div>
 
-    <!-- RIGHT: LIVE SHAREPOINT LIST MIRROR -->
+    <!-- RIGHT: SHAREPOINT LIST TABLE -->
     <div class="card-panel">
       <div class="sp-header">
         <div>
           <h2>📊 SharePoint List: FaultReports</h2>
           <p>Campus Equipment Fault Reporting • Live Synced Data</p>
         </div>
-        <button class="reset-btn" id="refresh-sp-btn">↻ Refresh List</button>
+        <div class="sp-actions">
+          <input type="file" id="csv-file-input" accept=".csv" style="display:none" />
+          <button class="reset-btn" id="upload-csv-btn">📥 Upload CSV</button>
+          <button class="reset-btn" id="refresh-sp-btn">↻ Refresh List</button>
+        </div>
       </div>
       <div class="sp-body">
         <table class="sp-table">
@@ -220,13 +228,18 @@
     const verifyBar = document.getElementById('verification-bar');
     const verifyStatus = document.getElementById('verify-status');
     const spTbody = document.getElementById('sp-tbody');
+    const uploadBtn = document.getElementById('upload-csv-btn');
+    const fileInput = document.getElementById('csv-file-input');
+    const refreshBtn = document.getElementById('refresh-sp-btn');
+
     const sessionId = 'helper-sp-' + Math.random().toString(36).substring(2, 9);
 
     function renderSharePointTable(faults) {
       spTbody.innerHTML = '';
       faults.forEach(item => {
-        const eqClass = item.EquipmentType.includes('Projector') ? 'pill-proj'
-                      : item.EquipmentType.includes('PC') ? 'pill-pc' : 'pill-net';
+        const eqType = item.EquipmentType || 'Equipment';
+        const eqClass = eqType.toLowerCase().includes('projector') ? 'pill-proj'
+                      : eqType.toLowerCase().includes('pc') ? 'pill-pc' : 'pill-net';
         const prioClass = item.Priority === 'High' ? 'pill-high'
                         : item.Priority === 'Medium' ? 'pill-med' : 'pill-low';
 
@@ -234,7 +247,7 @@
         tr.innerHTML = `
           <td><strong>${item.Title}</strong><br/><span style="font-size:11px;color:#64748b">${item.Status || 'Assigned'}</span></td>
           <td><strong>${item.FaultID}</strong></td>
-          <td><span class="pill ${eqClass}">${item.EquipmentType}</span></td>
+          <td><span class="pill ${eqClass}">${eqType}</span></td>
           <td style="color:#334155">${item.Description}</td>
           <td><span class="pill ${prioClass}">${item.Priority}</span></td>
         `;
@@ -243,9 +256,13 @@
     }
 
     async function loadSharePointFaults() {
-      const res = await fetch('/api/faults');
-      const data = await res.json();
-      renderSharePointTable(data);
+      try {
+        const res = await fetch('/api/faults');
+        const data = await res.json();
+        renderSharePointTable(data);
+      } catch (err) {
+        console.error('Error loading faults:', err);
+      }
     }
 
     function formatMarkdown(text) {
@@ -289,7 +306,7 @@
         }
 
         if (data.createdFault) {
-          appendMessage(`✅ **Synced to SharePoint FaultReports!**\nLogged **${data.createdFault.FaultID}** (${data.createdFault.Title} — ${data.createdFault.EquipmentType}, Priority: ${data.createdFault.Priority}).`, 'bot');
+          appendMessage(`✅ **Added to FaultReports!**\nLogged **${data.createdFault.FaultID}** (${data.createdFault.Title} — ${data.createdFault.EquipmentType}, Priority: ${data.createdFault.Priority}).`, 'bot');
         }
 
         appendMessage(data.response || data.error, 'bot');
@@ -300,17 +317,51 @@
       }
     }
 
+    // CSV File Upload Handler
+    uploadBtn.addEventListener('click', () => {
+      fileInput.value = '';
+      fileInput.click();
+    });
+
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      uploadBtn.textContent = '⏳ Uploading...';
+      try {
+        const csvText = await file.text();
+        const res = await fetch('/api/import-sharepoint-csv', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ csv: csvText })
+        });
+
+        const data = await res.json();
+        if (res.ok && data.items) {
+          renderSharePointTable(data.items);
+          appendMessage(`✅ **CSV Imported!** Updated table and Helper's memory with **${data.count} fault reports** from \`${file.name}\`.`, 'bot');
+        } else {
+          appendMessage(`❌ **CSV Error:** ${data.error || 'Could not parse file.'}`, 'bot');
+        }
+      } catch (err) {
+        appendMessage(`❌ **Upload Failed:** Make sure your server (\`node server.js\`) was restarted!`, 'bot');
+      } finally {
+        uploadBtn.textContent = '📥 Upload CSV';
+      }
+    });
+
+    refreshBtn.addEventListener('click', loadSharePointFaults);
     form.addEventListener('submit', (e) => { e.preventDefault(); sendMessage(input.value.trim()); });
     document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => sendMessage(c.dataset.prompt)));
-    document.getElementById('refresh-sp-btn').addEventListener('click', loadSharePointFaults);
+
     document.getElementById('reset-btn').addEventListener('click', () => {
       history.innerHTML = '';
-      appendMessage("Hi! I'm **Helper**, connected directly to your **SharePoint FaultReports** list.\n\nAsk me to check **F001** or **F002**, or tell me your **Name & Student/Staff #** so I can log a new fault directly into SharePoint for you!", 'bot');
+      appendMessage("Hi! I'm **Helper**, connected to your **SharePoint FaultReports** list.\n\nClick **📥 Upload CSV** anytime to load your latest SharePoint export, or ask me about any fault!", 'bot');
     });
 
     window.addEventListener('DOMContentLoaded', () => {
       loadSharePointFaults();
-      appendMessage("Hi! I'm **Helper**, connected directly to your **SharePoint FaultReports** list.\n\nAsk me to check **F001** or **F002**, or tell me your **Name & Student/Staff #** so I can log a new fault directly into SharePoint for you!", 'bot');
+      appendMessage("Hi! I'm **Helper**, connected to your **SharePoint FaultReports** list.\n\nClick **📥 Upload CSV** anytime to load your latest SharePoint export, or ask me about any fault!", 'bot');
     });
   </script>
 </body>
