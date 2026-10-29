@@ -1,0 +1,20 @@
+[
+  {
+    "Title": "Projector not working",
+    "FaultID": "F001",
+    "EquipmentType": "Projector",
+    "Description": "The projector does not display an image when connected to the classroom computer.",
+    "Priority": "High",
+    "Status": "Assigned",
+    "RoomNumber": "Room 12"
+  },
+  {
+    "Title": "PC not powering On",
+    "FaultID": "F002",
+    "EquipmentType": "Classroom PC",
+    "Description": "PC does not switch on at the power button or wall socket.",
+    "Priority": "High",
+    "Status": "In Progress",
+    "RoomNumber": "Lab 3"
+  }
+]

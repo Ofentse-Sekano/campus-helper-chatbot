@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Belgium Campus | Helper & SharePoint Faults</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bc-red: #b31b1b;
+      --bc-red-dark: #8c1414;
+      --bc-red-light: #fdf2f2;
+      --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      --surface: #ffffff;
+      --surface-alt: #f8fafc;
+      --border: #e2e8f0;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-gradient);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      color: var(--text-main);
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 460px 520px;
+      gap: 20px;
+      max-width: 1020px;
+      width: 100%;
+      height: 88vh;
+      max-height: 760px;
+    }
+
+    @media (max-width: 980px) {
+      .main-grid { grid-template-columns: 1fr; height: auto; max-height: none; }
+    }
+
+    .card-panel {
+      background: var(--surface);
+      border-radius: 24px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    /* Header */
+    .chat-header {
+      background: linear-gradient(135deg, var(--bc-red) 0%, var(--bc-red-dark) 100%);
+      color: #fff;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .header-top { display: flex; justify-content: space-between; align-items: center; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .bot-avatar-header {
+      width: 40px; height: 40px; border-radius: 12px;
+      background: rgba(255, 255, 255, 0.18);
+      display: flex; align-items: center; justify-content: center; font-size: 20px;
+    }
+    .brand-title h1 { font-size: 15.5px; font-weight: 700; }
+    .brand-title p { font-size: 11.5px; opacity: 0.88; display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+    .online-dot { width: 8px; height: 8px; background: #4ade80; border-radius: 50%; box-shadow: 0 0 8px #4ade80; }
+
+    .reset-btn {
+      background: rgba(255, 255, 255, 0.15);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      color: white; padding: 6px 10px; border-radius: 8px; font-size: 12px; cursor: pointer;
+    }
+
+    .verification-bar {
+      background: rgba(0, 0, 0, 0.22);
+      padding: 7px 12px; border-radius: 10px; font-size: 11.5px;
+    }
+    .verification-bar.verified { background: #dcfce7; color: #15803d; font-weight: 600; }
+
+    #chat-history {
+      flex: 1; padding: 18px; overflow-y: auto; background: var(--surface-alt);
+      display: flex; flex-direction: column; gap: 14px;
+    }
+
+    .msg-row { display: flex; gap: 10px; align-items: flex-end; }
+    .msg-row.user { flex-direction: row-reverse; }
+    .msg-avatar {
+      width: 28px; height: 28px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0;
+    }
+    .msg-row.bot .msg-avatar { background: var(--bc-red-light); color: var(--bc-red); border: 1px solid #fecaca; }
+    .msg-row.user .msg-avatar { background: #1e293b; color: #fff; }
+
+    .msg-bubble {
+      max-width: 82%; padding: 11px 15px; border-radius: 15px; font-size: 13px; line-height: 1.5;
+    }
+    .msg-row.bot .msg-bubble { background: #fff; border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+    .msg-row.user .msg-bubble { background: var(--bc-red); color: #fff; border-bottom-right-radius: 4px; }
+    .msg-bubble ul { margin: 6px 0 6px 18px; }
+    .msg-time { display: block; font-size: 10px; margin-top: 5px; opacity: 0.65; text-align: right; }
+
+    .quick-chips {
+      display: flex; gap: 7px; padding: 10px 14px; background: #fff;
+      border-top: 1px solid var(--border); overflow-x: auto; scrollbar-width: none;
+    }
+    .quick-chips::-webkit-scrollbar { display: none; }
+    .chip {
+      background: var(--surface-alt); border: 1px solid var(--border);
+      padding: 6px 11px; border-radius: 999px; font-size: 11.5px; font-weight: 500;
+      white-space: nowrap; cursor: pointer;
+    }
+    .chip:hover { background: var(--bc-red-light); border-color: var(--bc-red); color: var(--bc-red); }
+
+    #loader { display: none; align-items: center; gap: 8px; padding: 8px 18px; background: var(--surface-alt); font-size: 12px; color: var(--text-muted); }
+
+    #chat-form { display: flex; gap: 8px; padding: 12px 14px; background: #fff; border-top: 1px solid var(--border); }
+    #user-input { flex: 1; padding: 11px 14px; border: 1.5px solid var(--border); border-radius: 12px; font-size: 13.5px; outline: none; }
+    #user-input:focus { border-color: var(--bc-red); }
+    #send-btn { background: var(--bc-red); color: #fff; border: none; padding: 11px 16px; border-radius: 12px; font-weight: 600; cursor: pointer; }
+
+    /* SharePoint Panel Styling */
+    .sp-header {
+      background: #0f172a; color: #fff; padding: 16px 20px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .sp-header h2 { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .sp-header p { font-size: 11.5px; color: #94a3b8; margin-top: 3px; }
+    .sp-body { flex: 1; padding: 16px; overflow-y: auto; background: var(--surface-alt); }
+
+    .sp-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); font-size: 12.5px; }
+    .sp-table th { background: #f1f5f9; text-align: left; padding: 10px 12px; font-weight: 600; color: #475569; border-bottom: 1px solid var(--border); }
+    .sp-table td { padding: 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+
+    .pill { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .pill-proj { background: #dbeafe; color: #1d4ed8; }
+    .pill-pc { background: #dcfce7; color: #15803d; }
+    .pill-net { background: #f3e8ff; color: #7e22ce; }
+    .pill-high { background: #fef3c7; color: #b45309; }
+    .pill-med { background: #e0f2fe; color: #0369a1; }
+    .pill-low { background: #f1f5f9; color: #475569; }
+  </style>
+</head>
+<body>
+  <div class="main-grid">
+    <!-- LEFT: HELPER CHATBOT -->
+    <div class="card-panel">
+      <div class="chat-header">
+        <div class="header-top">
+          <div class="brand">
+            <div class="bot-avatar-header">🛠️</div>
+            <div class="brand-title">
+              <h1>Helper — Campus IT Support</h1>
+              <p><span class="online-dot"></span> Connected to SharePoint • FaultReports</p>
+            </div>
+          </div>
+          <button class="reset-btn" id="reset-btn">Reset</button>
+        </div>
+        <div class="verification-bar" id="verification-bar">
+          <span id="verify-status">🔒 Unverified Session (Provide Name & Student/Staff #)</span>
+        </div>
+      </div>
+
+      <div id="chat-history"></div>
+      <div id="loader"><span>🛠️ Helper is checking SharePoint FaultReports...</span></div>
+
+      <div class="quick-chips">
+        <button type="button" class="chip" data-prompt="🔍 Check status of FaultID F001 and F002 in SharePoint">🔍 Check F001 & F002</button>
+        <button type="button" class="chip" data-prompt="➕ Please log a High Priority fault for a broken Projector in Room 15.">➕ Log Fault to SharePoint</button>
+        <button type="button" class="chip" data-prompt="🚨 My PC crashed during an exam in Lab 3!">🚨 Exam PC Crash</button>
+      </div>
+
+      <form id="chat-form">
+        <input type="text" id="user-input" placeholder="Ask about F001, or tell Helper to log a new fault..." required autocomplete="off" />
+        <button type="submit" id="send-btn">Send ➤</button>
+      </form>
+    </div>
+
+    <!-- RIGHT: LIVE SHAREPOINT LIST MIRROR -->
+    <div class="card-panel">
+      <div class="sp-header">
+        <div>
+          <h2>📊 SharePoint List: FaultReports</h2>
+          <p>Campus Equipment Fault Reporting • Live Synced Data</p>
+        </div>
+        <button class="reset-btn" id="refresh-sp-btn">↻ Refresh List</button>
+      </div>
+      <div class="sp-body">
+        <table class="sp-table">
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>FaultID</th>
+              <th>Equipment Type</th>
+              <th>Description</th>
+              <th>Priority</th>
+            </tr>
+          </thead>
+          <tbody id="sp-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('chat-form');
+    const input = document.getElementById('user-input');
+    const history = document.getElementById('chat-history');
+    const loader = document.getElementById('loader');
+    const verifyBar = document.getElementById('verification-bar');
+    const verifyStatus = document.getElementById('verify-status');
+    const spTbody = document.getElementById('sp-tbody');
+    const sessionId = 'helper-sp-' + Math.random().toString(36).substring(2, 9);
+
+    function renderSharePointTable(faults) {
+      spTbody.innerHTML = '';
+      faults.forEach(item => {
+        const eqClass = item.EquipmentType.includes('Projector') ? 'pill-proj'
+                      : item.EquipmentType.includes('PC') ? 'pill-pc' : 'pill-net';
+        const prioClass = item.Priority === 'High' ? 'pill-high'
+                        : item.Priority === 'Medium' ? 'pill-med' : 'pill-low';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${item.Title}</strong><br/><span style="font-size:11px;color:#64748b">${item.Status || 'Assigned'}</span></td>
+          <td><strong>${item.FaultID}</strong></td>
+          <td><span class="pill ${eqClass}">${item.EquipmentType}</span></td>
+          <td style="color:#334155">${item.Description}</td>
+          <td><span class="pill ${prioClass}">${item.Priority}</span></td>
+        `;
+        spTbody.appendChild(tr);
+      });
+    }
+
+    async function loadSharePointFaults() {
+      const res = await fetch('/api/faults');
+      const data = await res.json();
+      renderSharePointTable(data);
+    }
+
+    function formatMarkdown(text) {
+      let escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      escaped = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      return escaped.replace(/\n/g, '<br/>');
+    }
+
+    function appendMessage(text, sender) {
+      const row = document.createElement('div');
+      row.className = `msg-row ${sender}`;
+      row.innerHTML = `
+        <div class="msg-avatar">${sender === 'bot' ? '🛠️' : '👤'}</div>
+        <div class="msg-bubble">${formatMarkdown(text)}<span class="msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
+      `;
+      history.appendChild(row);
+      history.scrollTop = history.scrollHeight;
+    }
+
+    async function sendMessage(messageText, isReset = false) {
+      if (!messageText) return;
+      appendMessage(messageText, 'user');
+      input.value = '';
+      loader.style.display = 'flex';
+
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userInput: messageText, sessionId, reset: isReset })
+        });
+        const data = await res.json();
+
+        if (data.verifiedUser) {
+          verifyBar.classList.add('verified');
+          verifyStatus.textContent = `✅ Verified: ${data.verifiedUser.fullName} (${data.verifiedUser.idNumber}) • ${data.verifiedUser.role}`;
+        }
+
+        if (data.allFaults) {
+          renderSharePointTable(data.allFaults);
+        }
+
+        if (data.createdFault) {
+          appendMessage(`✅ **Synced to SharePoint FaultReports!**\nLogged **${data.createdFault.FaultID}** (${data.createdFault.Title} — ${data.createdFault.EquipmentType}, Priority: ${data.createdFault.Priority}).`, 'bot');
+        }
+
+        appendMessage(data.response || data.error, 'bot');
+      } catch (err) {
+        appendMessage('⚠️ Connection error. Please try again.', 'bot');
+      } finally {
+        loader.style.display = 'none';
+      }
+    }
+
+    form.addEventListener('submit', (e) => { e.preventDefault(); sendMessage(input.value.trim()); });
+    document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => sendMessage(c.dataset.prompt)));
+    document.getElementById('refresh-sp-btn').addEventListener('click', loadSharePointFaults);
+    document.getElementById('reset-btn').addEventListener('click', () => {
+      history.innerHTML = '';
+      appendMessage("Hi! I'm **Helper**, connected directly to your **SharePoint FaultReports** list.\n\nAsk me to check **F001** or **F002**, or tell me your **Name & Student/Staff #** so I can log a new fault directly into SharePoint for you!", 'bot');
+    });
+
+    window.addEventListener('DOMContentLoaded', () => {
+      loadSharePointFaults();
+      appendMessage("Hi! I'm **Helper**, connected directly to your **SharePoint FaultReports** list.\n\nAsk me to check **F001** or **F002**, or tell me your **Name & Student/Staff #** so I can log a new fault directly into SharePoint for you!", 'bot');
+    });
+  </script>
+</body>
+</html>
