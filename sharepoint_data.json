@@ -70,5 +70,29 @@
     "Description": "Crackling sound from the speaker",
     "Priority": "Low",
     "Status": "Resolved"
+  },
+  {
+    "Title": "Projector not working",
+    "FaultID": "F010",
+    "EquipmentType": "Projector",
+    "Description": "Please log a High Priority fault for a broken Projector in Room 15.",
+    "Priority": "High",
+    "Status": "Assigned"
+  },
+  {
+    "Title": "PC not powering On / Crash",
+    "FaultID": "F011",
+    "EquipmentType": "Classroom PC",
+    "Description": "My PC crashed during an exam in Lab 3!",
+    "Priority": "High",
+    "Status": "Assigned"
+  },
+  {
+    "Title": "PC not powering On / Crash",
+    "FaultID": "F012",
+    "EquipmentType": "Classroom PC",
+    "Description": "My pc is not working and I am in an exam in class 13",
+    "Priority": "High",
+    "Status": "Assigned"
   }
 ]

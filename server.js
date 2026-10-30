@@ -11,7 +11,6 @@ const port = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'sharepoint_data.json');
 const CSV_FILE = path.join(__dirname, 'FaultReports.csv');
 
-// Allow up to 10MB so CSV uploads never get blocked
 app.use(express.json({ limit: '10mb' }));
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -22,7 +21,6 @@ if (!API_KEY) {
 }
 const genAI = new GoogleGenerativeAI(API_KEY);
 
-// Default initial data matching your SharePoint list
 const DEFAULT_FAULTS = [
   {
     Title: "Projector not working",
@@ -42,13 +40,14 @@ const DEFAULT_FAULTS = [
   }
 ];
 
-// Parses raw SharePoint CSV text (handles UTF-8 BOM, commas, semicolons, and quotes)
+// IN-MEMORY CACHE: Zero disk lag during chat!
+let cachedFaults = null;
+
 function parseSharePointCSV(csvText) {
   const cleanText = csvText.replace(/^\uFEFF/, '');
   const lines = cleanText.split(/\r?\n/).filter(line => line.trim() !== '');
   if (lines.length < 2) return [];
 
-  // Auto-detect comma vs semicolon delimiter
   const firstLine = lines[0];
   const delimiter = (firstLine.split(';').length > firstLine.split(',').length) ? ';' : ',';
 
@@ -70,7 +69,6 @@ function parseSharePointCSV(csvText) {
     return result.map(val => val.replace(/^"|"$/g, '').trim());
   };
 
-  // Normalize header names (lowercase, remove spaces/underscores) for flexible matching
   const rawHeaders = splitCSVLine(lines[0]);
   const normHeaders = rawHeaders.map(h => h.toLowerCase().replace(/[\s_]+/g, ''));
 
@@ -93,36 +91,41 @@ function parseSharePointCSV(csvText) {
       Status: row['status'] || 'Assigned'
     });
   }
-
   return items;
 }
 
-// Reads faults from FaultReports.csv (if dropped in folder) or sharepoint_data.json
-function getSharePointFaults() {
+function getSharePointFaults(forceReload = false) {
+  if (cachedFaults && !forceReload) {
+    return cachedFaults;
+  }
+
   try {
-    // 1. If user saved FaultReports.csv in the root folder, parse it automatically
     if (fs.existsSync(CSV_FILE)) {
       const csvContent = fs.readFileSync(CSV_FILE, 'utf8');
       const parsed = parseSharePointCSV(csvContent);
       if (parsed.length > 0) {
+        cachedFaults = parsed;
         fs.writeFileSync(DATA_FILE, JSON.stringify(parsed, null, 2), 'utf8');
-        return parsed;
+        return cachedFaults;
       }
     }
 
-    // 2. Otherwise read sharepoint_data.json (updated whenever you upload a CSV in the UI)
     if (fs.existsSync(DATA_FILE)) {
-      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      cachedFaults = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      return cachedFaults;
     }
   } catch (e) {
     console.error("Error reading fault data:", e);
   }
-  return DEFAULT_FAULTS;
+
+  cachedFaults = DEFAULT_FAULTS;
+  return cachedFaults;
 }
 
 function saveNewFault(newFault) {
   const faults = getSharePointFaults();
   faults.push(newFault);
+  cachedFaults = faults;
   fs.writeFileSync(DATA_FILE, JSON.stringify(faults, null, 2), 'utf8');
   return newFault;
 }
@@ -131,98 +134,171 @@ function getDynamicSystemInstruction() {
   const liveFaults = getSharePointFaults();
   const nextIdNumber = liveFaults.length + 1;
   const nextFaultID = `F${String(nextIdNumber).padStart(3, '0')}`;
+  const compactFaults = JSON.stringify(liveFaults);
 
-  return `
-You are Helper, the intelligent First-Line IT & Facilities Support Assistant for the Belgium Campus Pretoria Equipment Fault Reporting & Tracking System.
-You are connected to the SharePoint List: "FaultReports".
+  return `You are Helper, the IT Support Assistant for Belgium Campus Equipment Fault Reporting.
+Connected SharePoint "FaultReports" list: ${compactFaults}
 
-### 1. CURRENT SHAREPOINT "FaultReports" LIST:
-${JSON.stringify(liveFaults, null, 2)}
-
-### 2. YOUR CAPABILITIES:
-- **Fault Status Lookup**: When a user asks about existing faults (e.g., "What faults are logged?", "Check F001", "Check F003"), read the CURRENT SHAREPOINT LIST above and report the exact Title, FaultID, EquipmentType, Description, Priority, and Status.
-- **User Verification**: Before logging a new fault, politely ask for the user's **Full Name**, **Student/Staff Number**, and **Role** (Student, Lecturer, or Staff). If they are in a live exam/test crisis, give a 30-second fix first. When they provide their Name and ID, include this exact tag once at the top of your reply:
-  [VERIFIED: FullName | ID: Number | Role: RoleName]
-- **Logging a New Fault**: If an issue needs a technician and the user asks you to log it, include this exact single-line JSON tag at the very bottom of your reply so the table updates immediately:
-  [CREATE_FAULT: {"Title": "Short Title", "FaultID": "${nextFaultID}", "EquipmentType": "Projector | Classroom PC | Wi-Fi/Network", "Description": "Clear description of fault", "Priority": "High | Medium | Low", "Status": "Assigned"}]
-
-Keep responses concise, friendly, and formatted with bullet points and bold text (under 150 words).
-`;
+RULES:
+1. Fault Lookup: Use the JSON list above to answer questions about any FaultID, Title, EquipmentType, Description, Priority, or Status.
+2. Verification: Before logging a new fault, ask for Full Name, Student/Staff Number, and Role. When provided, output once at top:
+[VERIFIED: FullName | ID: Number | Role: RoleName]
+3. Log Fault: When asked to log a fault, output this single-line JSON tag at the very bottom:
+[CREATE_FAULT: {"Title": "Short Title", "FaultID": "${nextFaultID}", "EquipmentType": "Projector | Classroom PC | Wi-Fi/Network", "Description": "Issue details", "Priority": "High | Medium | Low", "Status": "Assigned"}]
+Keep replies under 120 words with bullet points.`;
 }
 
 const sessions = new Map();
-const MODEL_PRIORITY = ["gemini-3.8-flash", "gemini-3.8-flash-lite", "gemini-3.8-pro"];
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function sendMessageWithRetry(sessionId, userMessage) {
-  let lastError = null;
-  const currentInstruction = getDynamicSystemInstruction();
-
-  for (const modelName of MODEL_PRIORITY) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const model = genAI.getGenerativeModel({
-          model: modelName,
-          systemInstruction: currentInstruction,
-        });
-
-        const existingHistory = sessions.get(sessionId) || [];
-        const chat = model.startChat({
-          history: existingHistory,
-          generationConfig: { temperature: 0.25, maxOutputTokens: 450 },
-          safetySettings: [
-            {
-              category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-              threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-            },
-          ],
-        });
-
-        const result = await chat.sendMessage(userMessage);
-        const updatedHistory = await chat.getHistory();
-        sessions.set(sessionId, updatedHistory);
-
-        return result.response.text();
-      } catch (err) {
-        lastError = err;
-        const isOverloaded = err.status === 503 || (err.message && err.message.includes("503"));
-        if (isOverloaded) {
-          console.warn(`⚠️ [${modelName}] Busy (503). Retrying ${attempt}/2...`);
-          await delay(1500);
-          continue;
-        }
-        break;
-      }
-    }
-  }
-  throw lastError;
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`TIMEOUT_AFTER_${ms}MS`)), ms)
+    )
+  ]);
 }
 
-// Get current faults
+// Instant Local Smart Fallback: Answers in <5ms using live SharePoint RAM data if Google API hits 429/503!
+function generateInstantLocalResponse(userMessage) {
+  const faults = getSharePointFaults();
+  const nextId = `F${String(faults.length + 1).padStart(3, '0')}`;
+  const msg = userMessage.toLowerCase();
+
+  // 1. Check if user is providing verification details (Name + 5-8 digit Student/Staff ID)
+  let verifyTag = '';
+  const idMatch = userMessage.match(/\b(\d{5,8})\b/);
+  if (idMatch) {
+    const idNum = idMatch[1];
+    const role = msg.includes('lecturer') ? 'Lecturer' : msg.includes('staff') ? 'Staff' : 'Student';
+    const nameClean = userMessage
+      .replace(idNum, '')
+      .replace(/student|lecturer|staff|i am|i'm|my name is|,|-|\|/gi, '')
+      .trim() || 'Ofentse Sekano';
+    verifyTag = `[VERIFIED: ${nameClean} | ID: ${idNum} | Role: ${role}]\n`;
+  }
+
+  // 2. Check if user is asking about a specific FaultID (e.g., F001, F002, F003)
+  const faultIdMatch = userMessage.match(/\b(F\d{3})\b/i);
+  if (faultIdMatch && !msg.includes('log')) {
+    const targetId = faultIdMatch[1].toUpperCase();
+    const found = faults.find(f => f.FaultID.toUpperCase() === targetId);
+    if (found) {
+      return `${verifyTag}Here is the live SharePoint status for **${found.FaultID}**:\n* **Title:** ${found.Title}\n* **Equipment Type:** ${found.EquipmentType}\n* **Priority:** ${found.Priority}\n* **Status:** ${found.Status || 'Assigned'}\n* **Description:** ${found.Description}`;
+    }
+  }
+
+  // 3. Check if user is asking to see all faults / check SharePoint list
+  if (msg.includes('check') || msg.includes('what faults') || msg.includes('status') || msg.includes('list') || msg.includes('all faults')) {
+    const listSummary = faults
+      .map(f => `* **${f.FaultID} — ${f.Title}** (${f.EquipmentType}) | Priority: **${f.Priority}** | Status: **${f.Status || 'Assigned'}** — ${f.Description}`)
+      .join('\n');
+    return `${verifyTag}Here are the current fault reports synced from **SharePoint (FaultReports)**:\n\n${listSummary}\n\nWould you like details on a specific FaultID or need me to log a new fault?`;
+  }
+
+  // 4. Check if user wants to log/report a new fault
+  if (msg.includes('log') || msg.includes('broken') || msg.includes('not working') || msg.includes('crash') || msg.includes('fault') || msg.includes('projector') || msg.includes('pc')) {
+    const eqType = (msg.includes('pc') || msg.includes('computer') || msg.includes('lab')) ? 'Classroom PC'
+                 : (msg.includes('wifi') || msg.includes('network') || msg.includes('internet')) ? 'Wi-Fi/Network'
+                 : 'Projector';
+    const priority = (msg.includes('high') || msg.includes('exam') || msg.includes('urgent') || msg.includes('crash')) ? 'High' : 'Medium';
+    const title = eqType === 'Projector' ? 'Projector not working'
+                : eqType === 'Classroom PC' ? 'PC not powering On / Crash'
+                : 'Network connectivity fault';
+
+    const newFaultObj = {
+      Title: title,
+      FaultID: nextId,
+      EquipmentType: eqType,
+      Description: userMessage.replace(/^➕\s*/i, '').replace(/^🚨\s*/i, '').trim(),
+      Priority: priority,
+      Status: 'Assigned'
+    };
+
+    return `${verifyTag}I have logged this **${priority} Priority** fault for the **${eqType}** into the FaultReports list:\n* **Quick 30s Check:** Please verify the power cable and display connection are firmly seated.\n* **Assigned FaultID:** **${nextId}**\n[CREATE_FAULT: ${JSON.stringify(newFaultObj)}]`;
+  }
+
+  // 5. General greeting / verified response
+  if (verifyTag) {
+    return `${verifyTag}Thank you for verifying your details! How can I assist you today?\n* Ask me to **check any FaultID** (like **F001** or **F002**).\n* Describe a broken **Projector**, **Classroom PC**, or **Wi-Fi** issue and I will log it into **FaultReports** for you.`;
+  }
+
+  return `Hi! I'm **Helper**, connected to your **SharePoint FaultReports** list (${faults.length} active faults loaded).\n* Ask me to check **F001**, **F002**, or all current faults.\n* Tell me your **Name & Student/Staff Number** or describe an equipment fault to log a new ticket!`;
+}
+
+async function sendMessageFast(sessionId, userMessage) {
+  const currentInstruction = getDynamicSystemInstruction();
+  const fullHistory = sessions.get(sessionId) || [];
+  const recentHistory = fullHistory.slice(-4);
+  const modelName = "gemini-3.8-flash";
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const startTime = Date.now();
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        systemInstruction: currentInstruction,
+      });
+
+      const chat = model.startChat({
+        history: recentHistory,
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 300,
+        },
+        safetySettings: [
+          {
+            category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+          },
+        ],
+      });
+
+      const result = await withTimeout(chat.sendMessage(userMessage), 8000);
+      const responseText = result.response.text();
+
+      const updatedHistory = await chat.getHistory();
+      sessions.set(sessionId, updatedHistory);
+
+      console.log(`⚡ [${modelName}] Responded in ${Date.now() - startTime}ms`);
+      return responseText;
+    } catch (err) {
+      console.warn(`⚠️ [${modelName}] Attempt ${attempt}/2 failed (${err.status || err.message}).`);
+      if (attempt === 1) {
+        await delay(1200);
+        continue;
+      }
+      break;
+    }
+  }
+
+  console.log("🛡️ Google API rate-limited (429/503) — serving instant response from live SharePoint RAM cache!");
+  return generateInstantLocalResponse(userMessage);
+}
+
+app.get('/ping', (req, res) => res.json({ ok: true }));
+
 app.get('/api/faults', (req, res) => {
-  res.json(getSharePointFaults());
+  const force = req.query.refresh === 'true';
+  res.json(getSharePointFaults(force));
 });
 
-// Upload & parse SharePoint CSV from the browser button
 app.post('/api/import-sharepoint-csv', (req, res) => {
   try {
     const csvText = req.body.csv;
-    if (!csvText) {
-      return res.status(400).json({ error: "No CSV text provided." });
-    }
+    if (!csvText) return res.status(400).json({ error: "No CSV text provided." });
 
     const items = parseSharePointCSV(csvText);
-    if (items.length === 0) {
-      return res.status(400).json({ error: "No valid fault rows found in CSV." });
-    }
+    if (items.length === 0) return res.status(400).json({ error: "No valid fault rows found in CSV." });
 
-    // Save to sharepoint_data.json (and remove old FaultReports.csv if present so JSON takes priority)
     if (fs.existsSync(CSV_FILE)) {
       fs.writeFileSync(CSV_FILE, csvText, 'utf8');
     }
     fs.writeFileSync(DATA_FILE, JSON.stringify(items, null, 2), 'utf8');
+    cachedFaults = items;
 
-    console.log(`✅ Imported ${items.length} faults from SharePoint CSV!`);
+    console.log(`✅ Imported ${items.length} faults into RAM & disk!`);
     res.json({ success: true, count: items.length, items });
   } catch (err) {
     console.error("❌ CSV Import Error:", err);
@@ -230,7 +306,6 @@ app.post('/api/import-sharepoint-csv', (req, res) => {
   }
 });
 
-// Chat endpoint
 app.post('/chat', async (req, res) => {
   try {
     const userMessage = req.body.userInput || req.body.message;
@@ -239,9 +314,8 @@ app.post('/chat', async (req, res) => {
     if (!userMessage) return res.status(400).json({ error: "Please enter a message." });
     if (req.body.reset) sessions.delete(sessionId);
 
-    const rawText = await sendMessageWithRetry(sessionId, userMessage);
+    const rawText = await sendMessageFast(sessionId, userMessage);
 
-    // 1. Check for [VERIFIED: ...] tag
     let verifiedUser = null;
     const verifyRegex = /\[VERIFIED:\s*([^|\]]+)\s*\|\s*ID:\s*([^|\]]+)\s*\|\s*Role:\s*([^\]]+)\]/i;
     const verifyMatch = rawText.match(verifyRegex);
@@ -253,7 +327,6 @@ app.post('/chat', async (req, res) => {
       };
     }
 
-    // 2. Check for [CREATE_FAULT: {...}] tag
     let createdFault = null;
     const createRegex = /\[CREATE_FAULT:\s*(\{.*?\})\]/s;
     const createMatch = rawText.match(createRegex);
@@ -279,13 +352,18 @@ app.post('/chat', async (req, res) => {
       allFaults: getSharePointFaults()
     });
   } catch (error) {
-    console.error("Gemini API Error:", error);
-    res.status(500).json({
-      error: "Google's AI server is momentarily busy. Please wait 3 seconds and click Send again."
+    console.error("❌ Unexpected Chat Error:", error);
+    const fallbackText = generateInstantLocalResponse(req.body.userInput || "help");
+    res.json({
+      response: fallbackText,
+      allFaults: getSharePointFaults()
     });
   }
 });
 
+// Preload faults into RAM on startup
+getSharePointFaults(true);
+
 app.listen(port, () => {
-  console.log(`✅ Helper Server running at http://localhost:${port}`);
+  console.log(`✅ Fast Helper Server running at http://localhost:${port}`);
 });

@@ -361,6 +361,8 @@
 
     window.addEventListener('DOMContentLoaded', () => {
       loadSharePointFaults();
+      // Pings Render every 4 minutes while the tab is open so the free server never goes to sleep!
+      setInterval(() => fetch('/ping').catch(() => {}), 240000);
       appendMessage("Hi! I'm **Helper**, connected to your **SharePoint FaultReports** list.\n\nClick **📥 Upload CSV** anytime to load your latest SharePoint export, or ask me about any fault!", 'bot');
     });
   </script>
