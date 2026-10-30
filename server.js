@@ -2,6 +2,35 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+
+const nodemailer = require('nodemailer');
+
+const mailTransporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
+// Sends the new fault from the Bot directly to Power Automate -> SharePoint & Teams!
+function pushBotFaultToPowerAutomate(faultObj) {
+  if (!process.env.SMTP_USER || !process.env.CAMPUS_OUTLOOK_EMAIL) {
+    console.warn("⚠️ Skipping SharePoint/Teams push: Set SMTP_USER & CAMPUS_OUTLOOK_EMAIL in .env");
+    return;
+  }
+  mailTransporter.sendMail({
+    from: `"Helper AI Bot" <${process.env.SMTP_USER}>`,
+    to: process.env.CAMPUS_OUTLOOK_EMAIL,
+    subject: `[HELPER-NEW-FAULT] ${faultObj.FaultID}`,
+    text: JSON.stringify(faultObj),
+  }).then(() => {
+    console.log(`🚀 Sent ${faultObj.FaultID} to Power Automate (SharePoint + Teams)!`);
+  }).catch(err => {
+    console.error("❌ Power Automate Push Error:", err.message);
+  });
+}
+
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 require('dotenv').config();
 
@@ -334,6 +363,23 @@ app.post('/chat', async (req, res) => {
       try {
         const faultObj = JSON.parse(createMatch[1]);
         createdFault = saveNewFault(faultObj);
+        
+        let createdFault = null;
+    const createRegex = /\[CREATE_FAULT:\s*(\{.*?\})\]/s;
+    const createMatch = rawText.match(createRegex);
+    if (createMatch) {
+      try {
+        const faultObj = JSON.parse(createMatch[1]);
+        createdFault = saveNewFault(faultObj);
+        console.log("✅ New Fault Added Locally:", createdFault);
+
+        // Push directly to Real SharePoint List + Microsoft Teams via Power Automate!
+        pushBotFaultToPowerAutomate(createdFault);
+      } catch (e) {
+        console.error("Failed to parse CREATE_FAULT JSON:", e);
+      }
+    }
+
         console.log("✅ New Fault Added:", createdFault);
       } catch (e) {
         console.error("Failed to parse CREATE_FAULT JSON:", e);
