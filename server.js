@@ -2,35 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-
 const nodemailer = require('nodemailer');
-
-const mailTransporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
-// Sends the new fault from the Bot directly to Power Automate -> SharePoint & Teams!
-function pushBotFaultToPowerAutomate(faultObj) {
-  if (!process.env.SMTP_USER || !process.env.CAMPUS_OUTLOOK_EMAIL) {
-    console.warn("⚠️ Skipping SharePoint/Teams push: Set SMTP_USER & CAMPUS_OUTLOOK_EMAIL in .env");
-    return;
-  }
-  mailTransporter.sendMail({
-    from: `"Helper AI Bot" <${process.env.SMTP_USER}>`,
-    to: process.env.CAMPUS_OUTLOOK_EMAIL,
-    subject: `[HELPER-NEW-FAULT] ${faultObj.FaultID}`,
-    text: JSON.stringify(faultObj),
-  }).then(() => {
-    console.log(`🚀 Sent ${faultObj.FaultID} to Power Automate (SharePoint + Teams)!`);
-  }).catch(err => {
-    console.error("❌ Power Automate Push Error:", err.message);
-  });
-}
-
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 require('dotenv').config();
 
@@ -45,10 +17,36 @@ app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
 const API_KEY = process.env.GEMINI_API_KEY;
-if (!API_KEY) {
-  console.error("❌ ERROR: GEMINI_API_KEY is missing in your .env file.");
+const genAI = new GoogleGenerativeAI(API_KEY || '');
+
+// Email Bridge for Power Automate -> Real SharePoint List & Microsoft Teams
+const mailTransporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
+async function pushBotFaultToPowerAutomate(faultObj) {
+  if (!process.env.SMTP_USER || !process.env.SMTP_PASS || !process.env.CAMPUS_OUTLOOK_EMAIL) {
+    console.warn("⚠️ [RENDER POWER AUTOMATE SKIPPED]: Add SMTP_USER, SMTP_PASS, and CAMPUS_OUTLOOK_EMAIL to Render Environment Variables!");
+    return false;
+  }
+  try {
+    await mailTransporter.sendMail({
+      from: `"Helper AI Bot" <${process.env.SMTP_USER}>`,
+      to: process.env.CAMPUS_OUTLOOK_EMAIL,
+      subject: `[HELPER-NEW-FAULT] ${faultObj.FaultID}`,
+      text: JSON.stringify(faultObj),
+    });
+    console.log(`🚀 [POWER AUTOMATE SENT]: Pushed ${faultObj.FaultID} to ${process.env.CAMPUS_OUTLOOK_EMAIL}`);
+    return true;
+  } catch (err) {
+    console.error("❌ [POWER AUTOMATE EMAIL ERROR]:", err.message);
+    return false;
+  }
 }
-const genAI = new GoogleGenerativeAI(API_KEY);
 
 const DEFAULT_FAULTS = [
   {
@@ -69,7 +67,6 @@ const DEFAULT_FAULTS = [
   }
 ];
 
-// IN-MEMORY CACHE: Zero disk lag during chat!
 let cachedFaults = null;
 
 function parseSharePointCSV(csvText) {
@@ -123,12 +120,32 @@ function parseSharePointCSV(csvText) {
   return items;
 }
 
+function getNextFaultID(faults) {
+  let maxNum = faults.length;
+  faults.forEach(f => {
+    const m = String(f.FaultID || '').match(/F(\d+)/i);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > maxNum) maxNum = n;
+    }
+  });
+  return `F${String(maxNum + 1).padStart(3, '0')}`;
+}
+
 function getSharePointFaults(forceReload = false) {
   if (cachedFaults && !forceReload) {
     return cachedFaults;
   }
 
   try {
+    if (fs.existsSync(DATA_FILE)) {
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      if (Array.isArray(data) && data.length > 0) {
+        cachedFaults = data;
+        return cachedFaults;
+      }
+    }
+
     if (fs.existsSync(CSV_FILE)) {
       const csvContent = fs.readFileSync(CSV_FILE, 'utf8');
       const parsed = parseSharePointCSV(csvContent);
@@ -138,31 +155,89 @@ function getSharePointFaults(forceReload = false) {
         return cachedFaults;
       }
     }
-
-    if (fs.existsSync(DATA_FILE)) {
-      cachedFaults = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      return cachedFaults;
-    }
   } catch (e) {
     console.error("Error reading fault data:", e);
   }
 
-  cachedFaults = DEFAULT_FAULTS;
+  cachedFaults = [...DEFAULT_FAULTS];
   return cachedFaults;
 }
 
 function saveNewFault(newFault) {
   const faults = getSharePointFaults();
+  if (!newFault.FaultID || faults.some(f => f.FaultID === newFault.FaultID)) {
+    newFault.FaultID = getNextFaultID(faults);
+  }
   faults.push(newFault);
   cachedFaults = faults;
   fs.writeFileSync(DATA_FILE, JSON.stringify(faults, null, 2), 'utf8');
   return newFault;
 }
 
+function isFaultReportMessage(userMessage) {
+  const msg = userMessage.toLowerCase();
+  if (msg.startsWith('🔍') || msg.includes('what faults') || msg.includes('check all') || msg.includes('check status')) {
+    return false;
+  }
+  const hasSymptom =
+    msg.includes('log') ||
+    msg.includes('broken') ||
+    msg.includes('not working') ||
+    msg.includes('not powering') ||
+    msg.includes('crash') ||
+    msg.includes('fault') ||
+    msg.includes('issue') ||
+    msg.includes('offline') ||
+    msg.includes('flicker');
+
+  const hasEquipment =
+    msg.includes('projector') ||
+    msg.includes('pc') ||
+    msg.includes('computer') ||
+    msg.includes('lab') ||
+    msg.includes('room') ||
+    msg.includes('wifi') ||
+    msg.includes('wi-fi') ||
+    msg.includes('network') ||
+    msg.includes('screen') ||
+    msg.includes('speaker');
+
+  return hasSymptom && hasEquipment;
+}
+
+function buildFaultFromUserMessage(userMessage) {
+  const faults = getSharePointFaults();
+  const nextId = getNextFaultID(faults);
+  const msg = userMessage.toLowerCase();
+
+  const eqType = (msg.includes('pc') || msg.includes('computer') || msg.includes('lab'))
+    ? 'Classroom PC'
+    : (msg.includes('wifi') || msg.includes('wi-fi') || msg.includes('network') || msg.includes('internet'))
+    ? 'Wi-Fi/Network'
+    : 'Projector';
+
+  const priority = (msg.includes('high') || msg.includes('exam') || msg.includes('urgent') || msg.includes('crash'))
+    ? 'High'
+    : (msg.includes('low')) ? 'Low' : 'Medium';
+
+  const cleanDesc = userMessage.replace(/^➕\s*/i, '').replace(/^🚨\s*/i, '').trim();
+  const title = eqType === 'Projector' ? 'Projector not working'
+              : eqType === 'Classroom PC' ? 'PC not powering On'
+              : 'Network connectivity fault';
+
+  return {
+    Title: title,
+    FaultID: nextId,
+    EquipmentType: eqType,
+    Description: cleanDesc,
+    Priority: priority,
+    Status: 'Assigned'
+  };
+}
+
 function getDynamicSystemInstruction() {
   const liveFaults = getSharePointFaults();
-  const nextIdNumber = liveFaults.length + 1;
-  const nextFaultID = `F${String(nextIdNumber).padStart(3, '0')}`;
+  const nextFaultID = getNextFaultID(liveFaults);
   const compactFaults = JSON.stringify(liveFaults);
 
   return `You are Helper, the IT Support Assistant for Belgium Campus Equipment Fault Reporting.
@@ -170,10 +245,9 @@ Connected SharePoint "FaultReports" list: ${compactFaults}
 
 RULES:
 1. Fault Lookup: Use the JSON list above to answer questions about any FaultID, Title, EquipmentType, Description, Priority, or Status.
-2. Verification: Before logging a new fault, ask for Full Name, Student/Staff Number, and Role. When provided, output once at top:
+2. Verification: When a user provides their Name and Student/Staff ID, output once at top:
 [VERIFIED: FullName | ID: Number | Role: RoleName]
-3. Log Fault: When asked to log a fault, output this single-line JSON tag at the very bottom:
-[CREATE_FAULT: {"Title": "Short Title", "FaultID": "${nextFaultID}", "EquipmentType": "Projector | Classroom PC | Wi-Fi/Network", "Description": "Issue details", "Priority": "High | Medium | Low", "Status": "Assigned"}]
+3. Next Fault ID: The next available FaultID is ${nextFaultID}.
 Keep replies under 120 words with bullet points.`;
 }
 
@@ -189,13 +263,10 @@ function withTimeout(promise, ms) {
   ]);
 }
 
-// Instant Local Smart Fallback: Answers in <5ms using live SharePoint RAM data if Google API hits 429/503!
-function generateInstantLocalResponse(userMessage) {
+function generateInstantLocalResponse(userMessage, createdFault = null) {
   const faults = getSharePointFaults();
-  const nextId = `F${String(faults.length + 1).padStart(3, '0')}`;
   const msg = userMessage.toLowerCase();
 
-  // 1. Check if user is providing verification details (Name + 5-8 digit Student/Staff ID)
   let verifyTag = '';
   const idMatch = userMessage.match(/\b(\d{5,8})\b/);
   if (idMatch) {
@@ -208,9 +279,12 @@ function generateInstantLocalResponse(userMessage) {
     verifyTag = `[VERIFIED: ${nameClean} | ID: ${idNum} | Role: ${role}]\n`;
   }
 
-  // 2. Check if user is asking about a specific FaultID (e.g., F001, F002, F003)
+  if (createdFault) {
+    return `${verifyTag}I have logged this **${createdFault.Priority} Priority** fault for the **${createdFault.EquipmentType}** into the **SharePoint FaultReports** list:\n* **Assigned FaultID:** **${createdFault.FaultID}**\n* **Issue:** ${createdFault.Title} (${createdFault.Description})\n* **Quick 30s Check:** Please verify the power cable and display connection are firmly seated while a technician is dispatched.`;
+  }
+
   const faultIdMatch = userMessage.match(/\b(F\d{3})\b/i);
-  if (faultIdMatch && !msg.includes('log')) {
+  if (faultIdMatch) {
     const targetId = faultIdMatch[1].toUpperCase();
     const found = faults.find(f => f.FaultID.toUpperCase() === targetId);
     if (found) {
@@ -218,45 +292,25 @@ function generateInstantLocalResponse(userMessage) {
     }
   }
 
-  // 3. Check if user is asking to see all faults / check SharePoint list
   if (msg.includes('check') || msg.includes('what faults') || msg.includes('status') || msg.includes('list') || msg.includes('all faults')) {
     const listSummary = faults
       .map(f => `* **${f.FaultID} — ${f.Title}** (${f.EquipmentType}) | Priority: **${f.Priority}** | Status: **${f.Status || 'Assigned'}** — ${f.Description}`)
       .join('\n');
-    return `${verifyTag}Here are the current fault reports synced from **SharePoint (FaultReports)**:\n\n${listSummary}\n\nWould you like details on a specific FaultID or need me to log a new fault?`;
+    return `${verifyTag}Here are the current fault reports synced from **SharePoint (FaultReports)** (${faults.length} total):\n\n${listSummary}`;
   }
 
-  // 4. Check if user wants to log/report a new fault
-  if (msg.includes('log') || msg.includes('broken') || msg.includes('not working') || msg.includes('crash') || msg.includes('fault') || msg.includes('projector') || msg.includes('pc')) {
-    const eqType = (msg.includes('pc') || msg.includes('computer') || msg.includes('lab')) ? 'Classroom PC'
-                 : (msg.includes('wifi') || msg.includes('network') || msg.includes('internet')) ? 'Wi-Fi/Network'
-                 : 'Projector';
-    const priority = (msg.includes('high') || msg.includes('exam') || msg.includes('urgent') || msg.includes('crash')) ? 'High' : 'Medium';
-    const title = eqType === 'Projector' ? 'Projector not working'
-                : eqType === 'Classroom PC' ? 'PC not powering On / Crash'
-                : 'Network connectivity fault';
-
-    const newFaultObj = {
-      Title: title,
-      FaultID: nextId,
-      EquipmentType: eqType,
-      Description: userMessage.replace(/^➕\s*/i, '').replace(/^🚨\s*/i, '').trim(),
-      Priority: priority,
-      Status: 'Assigned'
-    };
-
-    return `${verifyTag}I have logged this **${priority} Priority** fault for the **${eqType}** into the FaultReports list:\n* **Quick 30s Check:** Please verify the power cable and display connection are firmly seated.\n* **Assigned FaultID:** **${nextId}**\n[CREATE_FAULT: ${JSON.stringify(newFaultObj)}]`;
-  }
-
-  // 5. General greeting / verified response
   if (verifyTag) {
-    return `${verifyTag}Thank you for verifying your details! How can I assist you today?\n* Ask me to **check any FaultID** (like **F001** or **F002**).\n* Describe a broken **Projector**, **Classroom PC**, or **Wi-Fi** issue and I will log it into **FaultReports** for you.`;
+    return `${verifyTag}Thank you for verifying your details! Tell me about any broken **Projector**, **Classroom PC**, or **Wi-Fi** issue and I will log it immediately.`;
   }
 
-  return `Hi! I'm **Helper**, connected to your **SharePoint FaultReports** list (${faults.length} active faults loaded).\n* Ask me to check **F001**, **F002**, or all current faults.\n* Tell me your **Name & Student/Staff Number** or describe an equipment fault to log a new ticket!`;
+  return `Hi! I'm **Helper**, connected to your **SharePoint FaultReports** list (${faults.length} active faults loaded).\n* Ask me to check **F001**, **F002**, or all current faults.\n* Describe an equipment fault (e.g., *"The PC in Lab 14 is not working, priority high"*) to log a new ticket!`;
 }
 
-async function sendMessageFast(sessionId, userMessage) {
+async function sendMessageFast(sessionId, userMessage, createdFault = null) {
+  if (createdFault) {
+    return generateInstantLocalResponse(userMessage, createdFault);
+  }
+
   const currentInstruction = getDynamicSystemInstruction();
   const fullHistory = sessions.get(sessionId) || [];
   const recentHistory = fullHistory.slice(-4);
@@ -295,15 +349,14 @@ async function sendMessageFast(sessionId, userMessage) {
     } catch (err) {
       console.warn(`⚠️ [${modelName}] Attempt ${attempt}/2 failed (${err.status || err.message}).`);
       if (attempt === 1) {
-        await delay(1200);
+        await delay(1000);
         continue;
       }
       break;
     }
   }
 
-  console.log("🛡️ Google API rate-limited (429/503) — serving instant response from live SharePoint RAM cache!");
-  return generateInstantLocalResponse(userMessage);
+  return generateInstantLocalResponse(userMessage, createdFault);
 }
 
 app.get('/ping', (req, res) => res.json({ ok: true }));
@@ -343,8 +396,18 @@ app.post('/chat', async (req, res) => {
     if (!userMessage) return res.status(400).json({ error: "Please enter a message." });
     if (req.body.reset) sessions.delete(sessionId);
 
-    const rawText = await sendMessageFast(sessionId, userMessage);
+    // 1. Deterministic Fault Creation: Immediately saves to right-hand table & pushes to Power Automate
+    let createdFault = null;
+    if (isFaultReportMessage(userMessage)) {
+      const faultObj = buildFaultFromUserMessage(userMessage);
+      createdFault = saveNewFault(faultObj);
+      console.log(`✅ Saved New Fault ${createdFault.FaultID} to Right-Side Table!`);
+      pushBotFaultToPowerAutomate(createdFault);
+    }
 
+    const rawText = await sendMessageFast(sessionId, userMessage, createdFault);
+
+    // 2. Check for [VERIFIED: ...] tag
     let verifiedUser = null;
     const verifyRegex = /\[VERIFIED:\s*([^|\]]+)\s*\|\s*ID:\s*([^|\]]+)\s*\|\s*Role:\s*([^\]]+)\]/i;
     const verifyMatch = rawText.match(verifyRegex);
@@ -356,33 +419,17 @@ app.post('/chat', async (req, res) => {
       };
     }
 
-    let createdFault = null;
+    // 3. Check for AI-generated [CREATE_FAULT: {...}] tag (cleanly initialized)
     const createRegex = /\[CREATE_FAULT:\s*(\{.*?\})\]/s;
-    const createMatch = rawText.match(createRegex);
-    if (createMatch) {
+    const aiCreateMatch = rawText.match(createRegex);
+    if (!createdFault && aiCreateMatch) {
       try {
-        const faultObj = JSON.parse(createMatch[1]);
+        const faultObj = JSON.parse(aiCreateMatch[1]);
         createdFault = saveNewFault(faultObj);
-        
-        let createdFault = null;
-    const createRegex = /\[CREATE_FAULT:\s*(\{.*?\})\]/s;
-    const createMatch = rawText.match(createRegex);
-    if (createMatch) {
-      try {
-        const faultObj = JSON.parse(createMatch[1]);
-        createdFault = saveNewFault(faultObj);
-        console.log("✅ New Fault Added Locally:", createdFault);
-
-        // Push directly to Real SharePoint List + Microsoft Teams via Power Automate!
+        console.log(`✅ Saved AI Fault ${createdFault.FaultID} to Right-Side Table!`);
         pushBotFaultToPowerAutomate(createdFault);
       } catch (e) {
-        console.error("Failed to parse CREATE_FAULT JSON:", e);
-      }
-    }
-
-        console.log("✅ New Fault Added:", createdFault);
-      } catch (e) {
-        console.error("Failed to parse CREATE_FAULT JSON:", e);
+        console.error("Failed to parse AI CREATE_FAULT JSON:", e.message);
       }
     }
 
@@ -399,17 +446,15 @@ app.post('/chat', async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Unexpected Chat Error:", error);
-    const fallbackText = generateInstantLocalResponse(req.body.userInput || "help");
     res.json({
-      response: fallbackText,
+      response: generateInstantLocalResponse(req.body.userInput || "help"),
       allFaults: getSharePointFaults()
     });
   }
 });
 
-// Preload faults into RAM on startup
 getSharePointFaults(true);
 
 app.listen(port, () => {
-  console.log(`✅ Fast Helper Server running at http://localhost:${port}`);
+  console.log(`✅ Fast Helper Server running on port ${port}`);
 });
